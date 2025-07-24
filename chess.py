@@ -1,6 +1,223 @@
-import math, copy, random
+import math, copy, random, time
 
-from cmu_112_graphics import *
+from cmu_graphics import *
+
+# AI Functions
+
+def evaluatePosition(app):
+    """Evaluate the current position. Positive favors white, negative favors black."""
+    value = 0
+    
+    # Material values
+    pieceValues = {pawn: 1, knight: 3, bishop: 3, rook: 5, queen: 9, king: 0}
+    
+    for piece in app.whitepieces:
+        value += pieceValues[type(piece)]
+    
+    for piece in app.blackpieces:
+        value -= pieceValues[type(piece)]
+    
+    # Add some positional bonuses
+    # Center control
+    centerSquares = [(3,3), (3,4), (4,3), (4,4)]
+    for row, col in centerSquares:
+        if app.plist[row][col] is not None:
+            if app.plist[row][col].color == 'white':
+                value += 0.3
+            else:
+                value -= 0.3
+    
+    # King safety (penalize exposed kings)
+    if inCheck(app, app.whiteking.row, app.whiteking.col, 'white'):
+        value -= 1
+    if inCheck(app, app.blackking.row, app.blackking.col, 'black'):
+        value += 1
+    
+    return value
+
+def getAllValidMoves(app, color):
+    """Get all valid moves for a given color."""
+    pieces = app.whitepieces if color == 'white' else app.blackpieces
+    allMoves = []
+    
+    for piece in pieces:
+        possibleMoves = piece.moves(app.plist)
+        # Set prevclick temporarily to use actualMoves function
+        originalPrevclick = app.prevclick
+        app.prevclick = [piece.row, piece.col]
+        validMoves = actualMoves(app, possibleMoves)
+        app.prevclick = originalPrevclick
+        
+        for move in validMoves:
+            allMoves.append((piece, move))
+    
+    return allMoves
+
+def makeMove(app, piece, move):
+    """Make a move and return the captured piece (if any) for undo."""
+    capturedPiece = app.plist[move[0]][move[1]]
+    
+    # Store original position
+    originalRow, originalCol = piece.row, piece.col
+    
+    # Handle special moves (similar to mousePressed logic)
+    if len(move) > 2:
+        if move[2] == 'hit':
+            if piece.color == 'white':
+                app.whitetakenpieces.append(capturedPiece)
+                app.blackpieces.remove(capturedPiece)
+            else:
+                app.blacktakenpieces.append(capturedPiece)
+                app.whitepieces.remove(capturedPiece)
+        # Handle castling, en passant, etc. (simplified for AI)
+    
+    # Move the piece
+    app.plist[originalRow][originalCol] = None
+    app.plist[move[0]][move[1]] = piece
+    piece.row = move[0]
+    piece.col = move[1]
+    
+    return capturedPiece, originalRow, originalCol
+
+def undoAIMove(app, piece, move, capturedPiece, originalRow, originalCol):
+    """Undo a move (used by AI for move evaluation)."""
+    # Move piece back
+    app.plist[move[0]][move[1]] = capturedPiece
+    app.plist[originalRow][originalCol] = piece
+    piece.row = originalRow
+    piece.col = originalCol
+    
+    # Restore captured piece
+    if capturedPiece is not None and len(move) > 2 and move[2] == 'hit':
+        if piece.color == 'white':
+            app.whitetakenpieces.remove(capturedPiece)
+            app.blackpieces.append(capturedPiece)
+        else:
+            app.blacktakenpieces.remove(capturedPiece)
+            app.whitepieces.append(capturedPiece)
+
+def easyAI(app):
+    """Easy AI: Random valid moves."""
+    validMoves = getAllValidMoves(app, app.computerPlayer)
+    if validMoves:
+        return random.choice(validMoves)
+    return None
+
+def mediumAI(app):
+    """Medium AI: Basic evaluation with some strategy."""
+    validMoves = getAllValidMoves(app, app.computerPlayer)
+    if not validMoves:
+        return None
+    
+    bestMove = None
+    bestValue = float('-inf') if app.computerPlayer == 'white' else float('inf')
+    
+    for piece, move in validMoves:
+        # Make the move
+        captured, origRow, origCol = makeMove(app, piece, move)
+        
+        # Evaluate position
+        value = evaluatePosition(app)
+        
+        # Add bonus for captures
+        if len(move) > 2 and move[2] == 'hit':
+            pieceValues = {pawn: 1, knight: 3, bishop: 3, rook: 5, queen: 9}
+            captureValue = pieceValues.get(type(captured), 0)
+            value += captureValue if app.computerPlayer == 'white' else -captureValue
+        
+        # Undo the move
+        undoAIMove(app, piece, move, captured, origRow, origCol)
+        
+        # Check if this is the best move
+        if app.computerPlayer == 'white':
+            if value > bestValue:
+                bestValue = value
+                bestMove = (piece, move)
+        else:
+            if value < bestValue:
+                bestValue = value
+                bestMove = (piece, move)
+    
+    return bestMove
+
+def minimax(app, depth, isMaximizing, alpha, beta):
+    """Minimax algorithm with alpha-beta pruning."""
+    if depth == 0:
+        return evaluatePosition(app)
+    
+    color = 'white' if isMaximizing else 'black'
+    validMoves = getAllValidMoves(app, color)
+    
+    if not validMoves:
+        # Check if it's checkmate or stalemate
+        king = app.whiteking if color == 'white' else app.blackking
+        if inCheck(app, king.row, king.col, color):
+            return -1000 if isMaximizing else 1000  # Checkmate
+        else:
+            return 0  # Stalemate
+    
+    if isMaximizing:
+        maxEval = float('-inf')
+        for piece, move in validMoves:
+            captured, origRow, origCol = makeMove(app, piece, move)
+            eval = minimax(app, depth - 1, False, alpha, beta)
+            undoAIMove(app, piece, move, captured, origRow, origCol)
+            
+            maxEval = max(maxEval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break  # Alpha-beta pruning
+        return maxEval
+    else:
+        minEval = float('inf')
+        for piece, move in validMoves:
+            captured, origRow, origCol = makeMove(app, piece, move)
+            eval = minimax(app, depth - 1, True, alpha, beta)
+            undoAIMove(app, piece, move, captured, origRow, origCol)
+            
+            minEval = min(minEval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break  # Alpha-beta pruning
+        return minEval
+
+def hardAI(app):
+    """Hard AI: Minimax with deeper search."""
+    validMoves = getAllValidMoves(app, app.computerPlayer)
+    if not validMoves:
+        return None
+    
+    bestMove = None
+    bestValue = float('-inf') if app.computerPlayer == 'white' else float('inf')
+    
+    for piece, move in validMoves:
+        captured, origRow, origCol = makeMove(app, piece, move)
+        
+        # Use minimax with depth 3
+        value = minimax(app, 3, app.computerPlayer == 'black', float('-inf'), float('inf'))
+        
+        undoAIMove(app, piece, move, captured, origRow, origCol)
+        
+        if app.computerPlayer == 'white':
+            if value > bestValue:
+                bestValue = value
+                bestMove = (piece, move)
+        else:
+            if value < bestValue:
+                bestValue = value
+                bestMove = (piece, move)
+    
+    return bestMove
+
+def getComputerMove(app):
+    """Get the computer's move based on difficulty."""
+    if app.difficulty == 'easy':
+        return easyAI(app)
+    elif app.difficulty == 'medium':
+        return mediumAI(app)
+    elif app.difficulty == 'hard':
+        return hardAI(app)
+    return None
 
 def gameDimensions():
     rows = 8
@@ -9,13 +226,19 @@ def gameDimensions():
     margin = 60
     return (rows, cols, cellSize, margin)
 
-def appStarted(app):
+def onAppStart(app):
     d = gameDimensions()
     #checks for checkmate, returns winner when over
     app.gameStarted = False
     app.gameOver = False
     app.winner = ''
 
+    #AI and game mode variables
+    app.gameMode = None  # None = menu, 'human' = human vs human, 'computer' = human vs computer
+    app.computerPlayer = 'black'  # which color the computer plays
+    app.difficulty = None  # 'easy', 'medium', 'hard'
+    app.computerThinking = False
+    
     #holds the previous click so each player can think and highlight moves
     app.prevclick = None
     app.firstclickwork = False
@@ -88,39 +311,40 @@ def appStarted(app):
         board.append(addrow)
         plist.append(addlist)
     
+    # TEMPORARILY DISABLED IMAGE LOADING FOR TESTING
     #CITATION image taken from online, free stock image of man on ground
     #image of bruce lee open for free use
     #photoshopped by Andy xu
-    app.bvictory = app.loadImage("bvictory.png")
+    # app.bvictory = app.loadImage("bvictory.png")
 
     #CITATION image taken by NBA, Lebron James dunking on Isaiah Thomas
     #courtesy of Bob DeChiaria USA Today
     #photoshopped by Andy xu
-    app.wvictory = app.loadImage("wvictory.png")
+    # app.wvictory = app.loadImage("wvictory.png")
 
     #CITATION image taken from Spiderman Original 
-    app.stalemate = app.loadImage("stalemate.png")
+    # app.stalemate = app.loadImage("stalemate.png")
 
     #CITATION menu screen taken from Olympia, Arnold Schwarzenegger 
     #and Ronnie Coleman free stock, photoshopped by me
-    app.menu = app.loadImage("Menu.png")
+    # app.menu = app.loadImage("Menu.png")
 
     #CITATION Muscle Letter P taken from P stock image
-    app.p = app.loadImage("P.png")
+    # app.p = app.loadImage("P.png")
 
     #CITATION Chess pieces taken from chess.com free to use
-    app.bking = app.loadImage(app.blackking.image)
-    app.bbishop = app.loadImage(app.blackbishop2.image)
-    app.bknight = app.loadImage(app.blackknight2.image)
-    app.brook = app.loadImage(app.blackrook1.image)
-    app.bpawn = app.loadImage(app.blackpawn1.image)
-    app.bqueen = app.loadImage(app.blackqueen.image)
-    app.wking = app.loadImage(app.whiteking.image)
-    app.wbishop = app.loadImage(app.whitebishop2.image)
-    app.wknight = app.loadImage(app.whiteknight1.image)
-    app.wrook = app.loadImage(app.whiterook1.image)
-    app.wpawn = app.loadImage(app.whitepawn1.image)
-    app.wqueen = app.loadImage(app.whitequeen.image)
+    # app.bking = app.loadImage(app.blackking.image)
+    # app.bbishop = app.loadImage(app.blackbishop2.image)
+    # app.bknight = app.loadImage(app.blackknight2.image)
+    # app.brook = app.loadImage(app.blackrook1.image)
+    # app.bpawn = app.loadImage(app.blackpawn1.image)
+    # app.bqueen = app.loadImage(app.blackqueen.image)
+    # app.wking = app.loadImage(app.whiteking.image)
+    # app.wbishop = app.loadImage(app.whitebishop2.image)
+    # app.wknight = app.loadImage(app.whiteknight1.image)
+    # app.wrook = app.loadImage(app.whiterook1.image)
+    # app.wpawn = app.loadImage(app.whitepawn1.image)
+    # app.wqueen = app.loadImage(app.whitequeen.image)
     
     #set up the board
     plist = [[app.blackrook1, app.blackknight1, app.blackbishop1, app.blackqueen, app.blackking, app.blackbishop2, app.blackknight2, app.blackrook2],
@@ -842,6 +1066,7 @@ def restartGame(app):
     app.gameOver = False
     app.gameStarted = False
     app.winner = ""
+    app.computerThinking = False
     board = []
     for i in range(8):
         addrow = []
@@ -962,30 +1187,213 @@ def undoMove(app):
     #switches the turn counter
     app.turn = not app.turn
 
-def keyPressed(app, event):
-    if(event.key == 'p'):
+def onKeyPress(app, key):
+    if(key == 'p'):
         app.gameStarted = True
 
-def mousePressed(app, event):
+def onStep(app):
+    if app.gameStarted and not app.gameOver and app.gameMode == 'computer':
+        # Check if it's the computer's turn
+        computersTurn = (app.computerPlayer == 'white' and app.turn) or (app.computerPlayer == 'black' and not app.turn)
+        
+        if computersTurn and not app.computerThinking:
+            app.computerThinking = True
+            # Add a small delay to show thinking
+            makeComputerMove(app)
+
+def makeComputerMove(app):
+    """Execute the computer's move."""
+    if app.gameOver:
+        return
+        
+    computerMove = getComputerMove(app)
+    if computerMove is None:
+        app.computerThinking = False
+        return
+    
+    piece, move = computerMove
+    
+    # Execute the move (similar to the human move logic in mousePressed)
+    executeMove(app, piece, move)
+    
+    app.computerThinking = False
+
+def executeMove(app, piece, move):
+    """Execute a move (used by both human and AI)."""
+    # Store for undo functionality
+    if app.turn:
+        app.undoList.append([
+            piece.row, piece.col, piece, app.plist[move[0]][move[1]],
+            app.storeOriginal, app.storePrevious, app.storePreviousType,
+            move, 'white'])
+        if type(piece) == king:
+            app.undoList[-1].extend([app.whiteking.hasMoved, 'wking'])
+        elif piece == app.whiterook1:
+            app.undoList[-1].extend([app.whiteking.queenside, 'wrook1'])
+        elif piece == app.whiterook2:
+            app.undoList[-1].extend([app.whiteking.kingside, 'wrook2'])
+    else:
+        app.undoList.append([
+            piece.row, piece.col, piece, app.plist[move[0]][move[1]],
+            app.storeOriginal, app.storePrevious, app.storePreviousType,
+            move, 'black'])
+        if type(piece) == king:
+            app.undoList[-1].extend([app.blackking.hasMoved, 'bking'])
+        elif piece == app.blackrook1:
+            app.undoList[-1].extend([app.blackking.queenside, 'brook1'])
+        elif piece == app.blackrook2:
+            app.undoList[-1].extend([app.blackking.kingside, 'brook2'])
+
+    # Handle special moves and piece movement
+    handleSpecialMoves(app, piece, move)
+    
+    # Move the piece
+    app.storeOriginal = piece.row
+    app.storePrevious = move
+    app.storePreviousType = type(piece)
+    piece.row = move[0]
+    piece.col = move[1]
+    app.plist[move[0]][move[1]] = piece
+    
+    # Handle pawn promotion (simplified for AI)
+    if type(piece) == pawn and piece.needPromotion():
+        # Auto-promote to queen for AI
+        newPiece = queen(piece.color, piece.row, piece.col)
+        promotion(app, piece, newPiece, piece.color)
+        app.plist[move[0]][move[1]] = newPiece
+        app.undoList[-1].extend(["promotion", piece])
+    
+    # Change turn
+    if not app.turn:
+        app.numTurns += 1
+    app.turn = not app.turn
+    
+    # Check for game over
+    checkGameOver(app)
+
+def handleSpecialMoves(app, piece, move):
+    """Handle castling, en passant, captures, etc."""
+    # Remove captured piece from original position
+    originalRow, originalCol = piece.row, piece.col
+    app.plist[originalRow][originalCol] = None
+    
+    # Handle captures and special moves
+    if len(move) > 2:
+        if move[2] == 'hit':
+            capturedPiece = app.plist[move[0]][move[1]]
+            if piece.color == 'white':
+                app.whitetakenpieces.append(capturedPiece)
+                app.blackpieces.remove(capturedPiece)
+            else:
+                app.blacktakenpieces.append(capturedPiece)
+                app.whitepieces.remove(capturedPiece)
+        # Handle other special moves (castling, en passant) - simplified for now
+    
+    # Update king/rook movement flags for castling
+    updateCastlingRights(app, piece)
+
+def updateCastlingRights(app, piece):
+    """Update castling rights when king or rook moves."""
+    if type(piece) == king:
+        if piece.color == 'white':
+            app.whiteking.hasMoved = True
+        else:
+            app.blackking.hasMoved = True
+    elif type(piece) == rook:
+        if piece == app.whiterook2:
+            app.whiteking.kingside = False
+        elif piece == app.whiterook1:
+            app.whiteking.queenside = False
+        elif piece == app.blackrook2:
+            app.blackking.kingside = False
+        elif piece == app.blackrook1:
+            app.blackking.queenside = False
+
+def checkGameOver(app):
+    """Check for checkmate or stalemate."""
+    color = 'white' if app.turn else 'black'
+    king = app.whiteking if app.turn else app.blackking
+    pieces = app.whitepieces if app.turn else app.blackpieces
+    
+    # Count valid moves
+    totalMoves = 0
+    for piece in pieces:
+        possibleMoves = piece.moves(app.plist)
+        originalPrevclick = app.prevclick
+        app.prevclick = [piece.row, piece.col]
+        validMoves = actualMoves(app, possibleMoves)
+        app.prevclick = originalPrevclick
+        totalMoves += len(validMoves)
+    
+    if totalMoves == 0:
+        if inCheck(app, king.row, king.col, color):
+            app.gameOver = True
+            app.winner = 'Black' if app.turn else 'White'
+        else:
+            app.gameOver = True
+            app.winner = ""  # Stalemate
+
+def onMousePress(app, mouseX, mouseY):
     #as long as game is not over and game hasn't started (menu screen)
     if(not app.gameStarted):
-        if(event.x > 150 and event.y > 510 and event.x < 200 and event.y < 560):
-            app.gameStarted = True
-            return
+        if app.gameMode is None:
+            # Game mode selection
+            if 200 <= mouseX <= 400:
+                if 300 <= mouseY <= 350:  # Human vs Human
+                    app.gameMode = 'human'
+                    app.gameStarted = True
+                    return
+                elif 370 <= mouseY <= 420:  # Human vs Computer
+                    app.gameMode = 'computer'
+                    return
+        elif app.gameMode == 'computer' and app.difficulty is None:
+            # Difficulty selection
+            if 200 <= mouseX <= 400:
+                if 250 <= mouseY <= 300:  # Easy
+                    app.difficulty = 'easy'
+                    app.gameStarted = True
+                    return
+                elif 320 <= mouseY <= 370:  # Medium
+                    app.difficulty = 'medium'
+                    app.gameStarted = True
+                    return
+                elif 390 <= mouseY <= 440:  # Hard
+                    app.difficulty = 'hard'
+                    app.gameStarted = True
+                    return
+            # Back button
+            if 50 <= mouseX <= 150 and 500 <= mouseY <= 530:
+                app.gameMode = None
+                return
+        elif app.gameMode == 'human':
+            # Start human vs human game
+            if(mouseX > 150 and mouseY > 510 and mouseX < 200 and mouseY < 560):
+                app.gameStarted = True
+                return
     if(app.gameStarted):
-        if(event.x > 545 and event.x < 595 and event.y > 305 and event.y < 355):
+        if(mouseX > 545 and mouseX < 595 and mouseY > 305 and mouseY < 355):
             restartGame(app)
             app.gameStarted = False
             return
     if(not app.gameOver and app.gameStarted):
-        if(event.x > 545 and event.x < 595 and event.y > 245 and event.y < 295):
+        # Don't allow human moves when computer is thinking
+        if app.gameMode == 'computer' and app.computerThinking:
+            return
+        
+        # Don't allow moves on computer's turn
+        if app.gameMode == 'computer':
+            computersTurn = (app.computerPlayer == 'white' and app.turn) or (app.computerPlayer == 'black' and not app.turn)
+            if computersTurn:
+                return
+        
+        if(mouseX > 545 and mouseX < 595 and mouseY > 245 and mouseY < 295):
             if(len(app.undoList) >= 1):
                 undoMove(app)
-        dx = ((event.x - app.margin)//app.cellSize)
+        dx = ((mouseX - app.margin)//app.cellSize)
         #insures in bounds, no out of bounds for window
         if (dx > 7 or dx < 0):
             return
-        dy = ((event.y - app.margin)//app.cellSize)
+        dy = ((mouseY - app.margin)//app.cellSize)
         if (dy > 7 or dy < 0):
             return
         #if I haven't clicked yet, and I click on a piece, it highlights the move and sets prevclick to that place
@@ -1231,39 +1639,91 @@ def promotion(app, promotedPawn, newPiece, color):
         app.blackpieces.remove(promotedPawn)
         app.blackpieces.append(newPiece)
 
-def redrawAll(app, canvas):
+def redrawAll(app):
     #menu screen
     if(not app.gameStarted):
-        canvas.create_image(app.width//2, app.height//2-20, 
-            image=ImageTk.PhotoImage(app.menu))
-        canvas.create_text(app.width//2, 60, text = "T w o  P l a y e r  C h e s s", 
-        font = ("Georgia", "30", "bold"))
-        canvas.create_text(app.width//2, app.height-100, text = "CLICK          TO START PLAYING",
-        font = ("Georgia 25 bold"))
-        canvas.create_text(app.width//2, app.height-50, text = "Coded by Andy Xu 15-112",
-        font = ("Georgia 15 italic"))
-        p = app.scaleImage(app.p, 0.8)
-        canvas.create_image(180, app.height-100, 
-            image=ImageTk.PhotoImage(p))
+        if app.gameMode is None:
+            # Main menu - game mode selection - NO IMAGES
+            drawRect(0, 0, app.width, app.height, fill='lightblue')
+            drawLabel("C h e s s  G a m e", app.width//2, 60, 
+                     font="Georgia", size=30, bold=True)
+            
+            drawLabel("Graphics working! No images for now.", app.width//2, 120, 
+                     font="Georgia", size=16, bold=True, fill='green')
+            
+            # Game mode buttons
+            drawRect(200, 300, 200, 50, fill='white', border='black', borderWidth=2)
+            drawLabel("Human vs Human", 300, 325, font="Georgia", size=16, bold=True)
+            
+            drawRect(200, 370, 200, 50, fill='lightgreen', border='black', borderWidth=2)
+            drawLabel("Human vs Computer", 300, 395, font="Georgia", size=16, bold=True)
+            
+            drawLabel("Coded by Andy Xu 15-112", app.width//2, app.height-50,
+                     font="Georgia", size=15, italic=True)
+            
+        elif app.gameMode == 'computer' and app.difficulty is None:
+            # Difficulty selection menu
+            drawRect(0, 0, app.width, app.height, fill='lightgray')
+            drawLabel("Select Difficulty", app.width//2, 60, 
+                     font="Georgia", size=30, bold=True)
+            
+            # Difficulty buttons
+            drawRect(200, 250, 200, 50, fill='lightgreen', border='black', borderWidth=2)
+            drawLabel("Easy", 300, 275, font="Georgia", size=16, bold=True)
+            
+            drawRect(200, 320, 200, 50, fill='yellow', border='black', borderWidth=2)
+            drawLabel("Medium", 300, 345, font="Georgia", size=16, bold=True)
+            
+            drawRect(200, 390, 200, 50, fill='orange', border='black', borderWidth=2)
+            drawLabel("Hard", 300, 415, font="Georgia", size=16, bold=True)
+            
+            # Back button
+            drawRect(50, 500, 100, 30, fill='gray', border='black', borderWidth=2)
+            drawLabel("Back", 100, 515, font="Georgia", size=12, bold=True)
+        
+        else:
+            # Old start screen for human vs human
+            drawRect(0, 0, app.width, app.height, fill='lightyellow')
+            drawLabel("T w o  P l a y e r  C h e s s", app.width//2, 60, 
+                     font="Georgia", size=30, bold=True)
+            drawLabel("CLICK P TO START PLAYING", app.width//2, app.height-100,
+                     font="Georgia", size=25, bold=True)
+            drawLabel("Coded by Andy Xu 15-112", app.width//2, app.height-50,
+                     font="Georgia", size=15, italic=True)
     #board, eval bar, taken pieces, move counter, etc.
     #for when the game truly starts
     if(app.gameStarted):
-        canvas.create_text(app.width/2, 30, text = '2P CHESS',
-        font = 'Arial 17 bold')
-        #displays whose turn it is
-        if(app.turn):
-            canvas.create_text(app.width/2 + 200, 30, text = 'Turn: White', 
-            font = 'Arial 17 bold')
+        # Game title
+        if app.gameMode == 'human':
+            drawLabel('2P CHESS', app.width/2, 30, 
+                     font='Arial', size=17, bold=True)
         else:
-            canvas.create_text(app.width/2 + 200, 30, text = 'Turn: Black', 
-            font = 'Arial 17 bold')
-        canvas.create_text(app.width/2 - 200, 30, text = f'Moves: {app.numTurns}',
-            font = 'Arial 17 bold')
-        drawBoard(app, canvas)
-        drawTakenPieces(app, canvas)
-        drawUndoButton(app, canvas)
-        drawResetButton(app, canvas)
-        drawPieces(app, canvas)
+            drawLabel(f'CHESS vs AI ({app.difficulty.upper()})', app.width/2, 30,
+                     font='Arial', size=17, bold=True)
+        
+        #displays whose turn it is
+        if app.gameMode == 'computer' and app.computerThinking:
+            drawLabel('Computer thinking...', app.width/2 + 200, 30, 
+                     font='Arial', size=17, bold=True, fill='red')
+        elif(app.turn):
+            turnText = 'Turn: White'
+            if app.gameMode == 'computer' and app.computerPlayer == 'white':
+                turnText += ' (AI)'
+            drawLabel(turnText, app.width/2 + 200, 30, 
+                     font='Arial', size=17, bold=True)
+        else:
+            turnText = 'Turn: Black'
+            if app.gameMode == 'computer' and app.computerPlayer == 'black':
+                turnText += ' (AI)'
+            drawLabel(turnText, app.width/2 + 200, 30, 
+                     font='Arial', size=17, bold=True)
+        drawLabel(f'Moves: {app.numTurns}', app.width/2 - 200, 30,
+                 font='Arial', size=17, bold=True)
+        drawBoard(app)
+        drawTakenPieces(app)
+        drawUndoButton(app)
+        drawResetButton(app)
+        drawPieces(app)
         #if the first click is on a piece, show the moves for that piece
         if(app.firstclickwork):
             if(app.plist[app.prevclick[0]][app.prevclick[1]] != None):
@@ -1272,58 +1732,55 @@ def redrawAll(app, canvas):
                 for move in actualmoves:
                     #checks for 'hit', if hit then make red
                     if(len(move) < 3 or (len(move) > 2 and move[2] == 2)):
-                        drawMoves(app, canvas, move[0], move[1], False)
+                        drawMoves(app, move[0], move[1], False)
                     elif(move[2]=='hit'):
-                        drawMoves(app, canvas, move[0], move[1], True)
+                        drawMoves(app, move[0], move[1], True)
                     elif(move[2]=='wqcastled' or move[2]=='bqcastled' or 
                         move[2]=='bkcastled' or move[2]=='wkcastled'):
-                        drawMoves(app, canvas, move[0], move[1], None)
+                        drawMoves(app, move[0], move[1], None)
                     elif(move[2]=='wlenpassant' or move[2]=='wrenpassant'
                         or move[2]=='blenpassant' or move[2]=='brenpassant'):
-                        drawMoves(app, canvas, move[0], move[1], 'e')
-        drawEvalBar(app, canvas)
+                        drawMoves(app, move[0], move[1], 'e')
+        drawEvalBar(app)
         #checkmate will display the victory message
         if(app.gameOver):
-            drawGameOver(app, canvas)
+            drawGameOver(app)
 
-def drawGameOver(app, canvas):
-    canvas.create_rectangle(60, app.height/2 + 30, app.width-60, app.height/2 - 30, fill = 'chartreuse')
+def drawGameOver(app):
+    drawRect(60, app.height/2 - 30, app.width-120, 60, fill='chartreuse')
     if(app.winner=='White'):
-        canvas.create_text(app.width/2, app.height/2, text = 'Good Game, The Winner Is White',
-            font = 'Arial 20 bold')
-        canvas.create_image(app.width//2, app.height//2-150,
-            image=ImageTk.PhotoImage(app.wvictory))
+        drawLabel('Good Game, The Winner Is White', app.width/2, app.height/2,
+                 font='Arial', size=20, bold=True)
+        # Image removed for now - will add back later
     elif(app.winner=='Black'):
-        canvas.create_text(app.width/2, app.height/2, text = 'Good Game, The Winner Is Black',
-            font = 'Arial 20 bold')
-        canvas.create_image(app.width//2, app.height//2-130,
-            image=ImageTk.PhotoImage(app.bvictory))
+        drawLabel('Good Game, The Winner Is Black', app.width/2, app.height/2,
+                 font='Arial', size=20, bold=True)
+        # Image removed for now - will add back later
     else:
-        canvas.create_text(app.width/2, app.height/2, text = 'STALEMATE',
-            font = 'Arial 24 bold')
-        canvas.create_image(app.width//2, app.height//2-115,
-            image=ImageTk.PhotoImage(app.stalemate))
+        drawLabel('STALEMATE', app.width/2, app.height/2,
+                 font='Arial', size=24, bold=True)
+        # Image removed for now - will add back later
 
 #boundaries are 545, 595 x and 245, 295 y
-def drawUndoButton(app, canvas):
-    canvas.create_rectangle(app.width-app.width/10+5, 245, app.width-5, 295,
-        fill = 'black', width = 3)
-    canvas.create_text(app.width-30, 270, text = 'UNDO', fill = 'white', 
-        font = ("Helvetica Bg", "12", "bold"))
+def drawUndoButton(app):
+    drawRect(app.width-app.width/10+5, 245, app.width/10-10, 50,
+             fill='black', border='black', borderWidth=3)
+    drawLabel('UNDO', app.width-30, 270, fill='white', 
+             font="Helvetica", size=12, bold=True)
 
 #boundaries are 545, 595 x and 305, 355 y
-def drawResetButton(app, canvas):
-    canvas.create_rectangle(app.width-app.width/10+5, 305, app.width-5, 355,
-    fill = 'white', width = 3)
-    canvas.create_text(app.width-30, 330, text = 'RESET', fill = 'black',
-        font = ("Helvetica Bg", "10", "bold"))
+def drawResetButton(app):
+    drawRect(app.width-app.width/10+5, 305, app.width/10-10, 50,
+             fill='white', border='black', borderWidth=3)
+    drawLabel('RESET', app.width-30, 330, fill='black',
+             font="Helvetica", size=10, bold=True)
 
-def drawBoard(app, canvas):
+def drawBoard(app):
     for i in range(8):
         for j in range(8):
-            drawCell(app, canvas, i, j, app.board[i][j][0])
+            drawCell(app, i, j, app.board[i][j][0])
 
-def drawTakenPieces(app, canvas):
+def drawTakenPieces(app):
     #draws all of the pieces on the edge of the board to show taken
     whitepawns, whiteknights, whitebishops, whiterooks, whitequeens = [],[],[],[],[]
     blackpawns, blackknights, blackbishops, blackrooks, blackqueens = [],[],[],[],[]
@@ -1362,47 +1819,42 @@ def drawTakenPieces(app, canvas):
     blacks.extend(blackrooks)
     blacks.extend(blackqueens)
     for ind in range(len(whites)):
+        # Draw small text representation of captured pieces
+        pieceChar = ''
         if(type(whites[ind])==pawn):
-            t = app.bpawn
+            pieceChar = 'p'
         elif(type(whites[ind])==rook):
-            t = app.brook
+            pieceChar = 'r'
         elif(type(whites[ind])==queen):
-            t = app.bqueen
+            pieceChar = 'q'
         elif(type(whites[ind])==knight):
-            t = app.bknight
+            pieceChar = 'n'
         elif(type(whites[ind])==bishop):
-            t = app.bbishop
-        smallt = app.scaleImage(t, 1/2)
-        if(ind%2==0):
-            canvas.create_image(app.margin//2-app.margin//6,
-            app.margin*0.5+app.cellSize*8-ind*(app.margin//4), 
-            image=ImageTk.PhotoImage(smallt))
-        else:
-            canvas.create_image(app.margin//2+app.margin//6,
-            app.margin*0.5+app.cellSize*8-ind*(app.margin//4), 
-            image=ImageTk.PhotoImage(smallt))
+            pieceChar = 'b'
+        
+        x = app.margin//2-app.margin//6 if (ind%2==0) else app.margin//2+app.margin//6
+        y = app.margin*0.5+app.cellSize*8-ind*(app.margin//4)
+        drawLabel(pieceChar, x, y, font='Arial', size=10, bold=True, fill='black')
+        
     for ind in range(len(blacks)):
+        # Draw small text representation of captured pieces
+        pieceChar = ''
         if(type(blacks[ind])==pawn):
-            t = app.wpawn 
+            pieceChar = 'P'
         elif(type(blacks[ind])==rook):
-            t = app.wrook
+            pieceChar = 'R'
         elif(type(blacks[ind])==queen):
-            t = app.wqueen
+            pieceChar = 'Q'
         elif(type(blacks[ind])==knight):
-            t = app.wknight
+            pieceChar = 'N'
         elif(type(blacks[ind])==bishop):
-            t = app.wbishop
-        smallt = app.scaleImage(t, 1/2)
-        if(ind % 2 == 0):
-            canvas.create_image(app.margin//2-app.margin//6,
-            app.margin*1.5+ind*(app.margin//4), 
-            image=ImageTk.PhotoImage(smallt))
-        else:
-            canvas.create_image(app.margin//2+app.margin//6,
-            app.margin*1.5+ind*(app.margin//4), 
-            image=ImageTk.PhotoImage(smallt))
+            pieceChar = 'B'
+        
+        x = app.margin//2-app.margin//6 if (ind % 2 == 0) else app.margin//2+app.margin//6
+        y = app.margin*1.5+ind*(app.margin//4)
+        drawLabel(pieceChar, x, y, font='Arial', size=10, bold=True, fill='white')
 
-def drawEvalBar(app, canvas):
+def drawEvalBar(app):
     #advantage is based on the pieces on the board. Thus, promotions will gain points
     advantage = 0
     for piece in app.whitepieces:
@@ -1423,103 +1875,96 @@ def drawEvalBar(app, canvas):
             advantage-=5
         elif(type(piece)==queen):
             advantage-=8
-    canvas.create_text(app.width//2, app.height-app.margin//3, text = 
-        'EVALUATION BAR', font = 'Arial 15 bold')
-    canvas.create_line(app.width//2, app.height-app.margin//2-10, app.width, 
-        app.height-app.margin//2-10, width = 5, fill = 'black')
-    canvas.create_line(0, app.height-app.margin//2-10, app.width//2, 
-        app.height-app.margin//2-10, width = 5, fill = 'light gray')
-    canvas.create_rectangle(app.width//2, app.height-app.margin+5, 
-        app.width//2-advantage*8, app.height-app.margin, fill = 'gray')
-    canvas.create_text(app.width//2, app.height-app.margin*1.25, 
-        text = str(advantage), font = 'Arial 15 bold')
+    drawLabel('EVALUATION BAR', app.width//2, app.height-app.margin//3,
+             font='Arial', size=15, bold=True)
+    drawLine(app.width//2, app.height-app.margin//2-10, app.width, 
+             app.height-app.margin//2-10, fill='black', lineWidth=5)
+    drawLine(0, app.height-app.margin//2-10, app.width//2, 
+             app.height-app.margin//2-10, fill='lightgray', lineWidth=5)
+    # Evaluation bar rectangle - only draw if there's an advantage
+    if advantage != 0:
+        barWidth = abs(advantage*8)
+        barHeight = max(5, app.margin-10)  # Ensure positive height
+        barX = app.width//2 - advantage*8 if advantage > 0 else app.width//2
+        drawRect(barX, app.height-app.margin+5, barWidth, 
+                 barHeight, fill='gray')
+    drawLabel(str(advantage), app.width//2, app.height-app.margin*1.25,
+             font='Arial', size=15, bold=True)
 
 #d is for castle, en passant, hits, and normal moves
-def drawMoves(app, canvas, moverow, movecol, d):
+def drawMoves(app, moverow, movecol, d):
+    x = app.margin + app.cellSize * (movecol + 0.5)
+    y = app.margin + app.cellSize * (moverow + 0.5)
+    radius = app.cellSize * 0.1
+    
     if(d == None):
-        canvas.create_oval(app.margin+app.cellSize*(movecol + 0.4), 
-            app.margin+app.cellSize*(moverow + 0.4), app.margin + 
-            app.cellSize*(movecol+0.6), app.margin+app.cellSize*(moverow+0.6),
-            fill = 'yellow', width = 0)
+        drawCircle(x, y, radius, fill='yellow')
     elif(d == True):
-        canvas.create_oval(app.margin+app.cellSize*(movecol + 0.4), 
-            app.margin+app.cellSize*(moverow + 0.4), app.margin + 
-            app.cellSize*(movecol+0.6), app.margin+app.cellSize*(moverow+0.6),
-            fill = 'red', width = 0)
+        drawCircle(x, y, radius, fill='red')
     elif(d == 'e'):
-        canvas.create_oval(app.margin+app.cellSize*(movecol + 0.4), 
-            app.margin+app.cellSize*(moverow + 0.4), app.margin + 
-            app.cellSize*(movecol+0.6), app.margin+app.cellSize*(moverow+0.6),
-            fill = 'blue', width = 0)
+        drawCircle(x, y, radius, fill='blue')
     else:
-        canvas.create_oval(app.margin+app.cellSize*(movecol + 0.4), 
-            app.margin+app.cellSize*(moverow + 0.4), app.margin + 
-            app.cellSize*(movecol+0.6), app.margin+app.cellSize*(moverow+0.6),
-            fill = 'green', width = 0)
+        drawCircle(x, y, radius, fill='green')
 
 #paraphrased from HW6 Tetris, used to draw the 8x8 chessboard
-def drawCell(app, canvas, row, col, color):
-    canvas.create_rectangle(app.margin+app.cellSize*col, 
-    app.margin+app.cellSize*row, 
-    app.margin+app.cellSize*(col+1), app.margin+app.cellSize*(row+1), fill =
-    color, outline = "black", width=3)
+def drawCell(app, row, col, color):
+    drawRect(app.margin+app.cellSize*col, 
+             app.margin+app.cellSize*row, 
+             app.cellSize, app.cellSize, 
+             fill=color, border="black", borderWidth=3)
 
 #paraphrased from HW6 Tetris
-def drawPieces(app, canvas):
+def drawPieces(app):
     for i in range(8):
         for j in range(8):
             d = app.plist[i][j]
             if(d!=None):
-                if(type(d)==pawn and 
-                    d.getColor()=='black'):
-                    drawP(app, canvas, i, j, app.bpawn)
-                elif(type(d)==queen and
-                    d.getColor()=='black'):
-                    drawP(app, canvas, i, j, app.bqueen)
-                elif(type(d)==rook and
-                    d.getColor()=='black'):
-                    drawP(app, canvas, i, j, app.brook)
-                elif(type(d)==knight and
-                    d.getColor()=='black'):
-                    drawP(app, canvas, i, j, app.bknight)
-                elif(type(d)==king and
-                    d.getColor()=='black'):
-                    drawP(app, canvas, i, j, app.bking)
-                elif(type(d)==bishop and
-                    d.getColor()=='black'):
-                    drawP(app, canvas, i, j, app.bbishop)
-                if(type(d)==pawn and 
-                    d.getColor()=='white'):
-                    drawP(app, canvas, i, j, app.wpawn)
-                elif(type(d)==queen and
-                    d.getColor()=='white'):
-                    drawP(app, canvas, i, j, app.wqueen)
-                elif(type(d)==rook and
-                    d.getColor()=='white'):
-                    drawP(app, canvas, i, j, app.wrook)
-                elif(type(d)==knight and
-                    d.getColor()=='white'):
-                    drawP(app, canvas, i, j, app.wknight)
-                elif(type(d)==king and
-                    d.getColor()=='white'):
-                    drawP(app, canvas, i, j, app.wking)
-                elif(type(d)==bishop and
-                    d.getColor()=='white'):
-                    drawP(app, canvas, i, j, app.wbishop)
+                # Pass the actual piece object instead of image
+                drawP(app, i, j, d)
 
 #draws the piece
-def drawP(app, canvas, row, col, piece):
-    canvas.create_image(app.margin+app.cellSize*(col+0.5),
-    app.margin+app.cellSize*(row+0.5), image=ImageTk.PhotoImage(piece))
+def drawP(app, row, col, piece):
+    # Draw colored shapes instead of images
+    x = app.margin+app.cellSize*(col+0.5)
+    y = app.margin+app.cellSize*(row+0.5)
+    radius = 20
+    
+    # Color based on piece color
+    fillColor = 'lightgray' if piece.getColor() == 'white' else 'darkgray'
+    
+    # Shape and label based on piece type
+    if type(piece) == king:
+        drawCircle(x, y, radius, fill=fillColor, border='black', borderWidth=3)
+        drawLabel('K', x, y, font='Arial', size=12, bold=True)
+    elif type(piece) == queen:
+        drawCircle(x, y, radius, fill=fillColor, border='black', borderWidth=2)
+        drawLabel('Q', x, y, font='Arial', size=12, bold=True)
+    elif type(piece) == rook:
+        drawRect(x-radius, y-radius, radius*2, radius*2, 
+                fill=fillColor, border='black', borderWidth=2)
+        drawLabel('R', x, y, font='Arial', size=12, bold=True)
+    elif type(piece) == bishop:
+        # Draw a diamond shape for bishop
+        drawPolygon(x, y-radius, x+radius, y, x, y+radius, x-radius, y,
+                   fill=fillColor, border='black', borderWidth=2)
+        drawLabel('B', x, y, font='Arial', size=12, bold=True)
+    elif type(piece) == knight:
+        # Draw an octagon for knight
+        points = []
+        for i in range(8):
+            angle = i * 45 * (3.14159/180)
+            px = x + radius * 0.8 * math.cos(angle)
+            py = y + radius * 0.8 * math.sin(angle)
+            points.extend([px, py])
+        drawPolygon(*points, fill=fillColor, border='black', borderWidth=2)
+        drawLabel('N', x, y, font='Arial', size=12, bold=True)
+    elif type(piece) == pawn:
+        drawCircle(x, y, radius//2, fill=fillColor, border='black', borderWidth=2)
+        drawLabel('P', x, y, font='Arial', size=10, bold=True)
 
 #runs the game
-def playChess():
-    runApp(width = 600, height = 640)
-
-# ___________________________________
-
 def main():
-    playChess()
+    runApp(width=600, height=640)
 
 if __name__ == '__main__':
     main()
