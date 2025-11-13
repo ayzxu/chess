@@ -1,7 +1,183 @@
 import math, copy, time
 import random as random_module
+from PIL import Image as PILImage
+import pygame
+import os
+import sys
 
-from cmu_graphics import *
+# Initialize pygame
+pygame.init()
+
+# Color constants
+COLORS = {
+    'white': (255, 255, 255),
+    'black': (0, 0, 0),
+    'gray': (128, 128, 128),
+    'lightgray': (211, 211, 211),
+    'lightblue': (173, 216, 230),
+    'lightgreen': (144, 238, 144),
+    'yellow': (255, 255, 0),
+    'red': (255, 0, 0),
+    'green': (0, 255, 0),
+    'blue': (0, 0, 255),
+    'orange': (255, 165, 0),
+    'chartreuse': (127, 255, 0),
+}
+
+def fixAlpha(path):
+    """Convert PNG to true RGBA format for proper transparency."""
+    try:
+        img = PILImage.open(path)
+        if img.mode != 'RGBA':
+            if img.mode == 'P' and 'transparency' in img.info:
+                img = img.convert("RGBA")
+            elif img.mode in ['RGB', 'L']:
+                img = img.convert("RGBA")
+            else:
+                img = img.convert("RGBA")
+        img.save(path, format='PNG', optimize=False)
+    except Exception as e:
+        print(f"Error fixing alpha for {path}: {e}")
+
+# Pygame helper functions to mimic cmu_graphics API
+class Game:
+    """Game class to hold all game state (replaces app object)."""
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+        self.screen = pygame.display.set_mode((width, height))
+        pygame.display.set_caption("Chess Game")
+        self.clock = pygame.time.Clock()
+        self.fonts = {}  # Cache fonts
+        self.images = {}  # Cache loaded images
+        
+    def get_font(self, name='Arial', size=16, bold=False, italic=False):
+        """Get or create a font."""
+        key = (name, size, bold, italic)
+        if key not in self.fonts:
+            try:
+                # pygame.font.match_font doesn't support italic, so we handle it separately
+                font_name = pygame.font.match_font(name, bold=bold)
+                font_obj = pygame.font.Font(font_name, size)
+                if italic:
+                    font_obj.set_italic(True)
+                self.fonts[key] = font_obj
+            except:
+                font_obj = pygame.font.Font(None, size)
+                if italic:
+                    font_obj.set_italic(True)
+                self.fonts[key] = font_obj
+        return self.fonts[key]
+    
+    def load_image(self, path):
+        """Load and cache an image."""
+        if path not in self.images:
+            try:
+                # Convert to RGBA for transparency
+                img = pygame.image.load(path).convert_alpha()
+                self.images[path] = img
+            except Exception as e:
+                print(f"Error loading image {path}: {e}")
+                return None
+        return self.images[path]
+    
+    def draw_rect(self, x, y, width, height, fill=None, border=None, borderWidth=0):
+        """Draw a rectangle."""
+        if fill:
+            color = COLORS.get(fill, fill) if isinstance(fill, str) else fill
+            pygame.draw.rect(self.screen, color, (x, y, width, height))
+        if border and borderWidth > 0:
+            border_color = COLORS.get(border, border) if isinstance(border, str) else border
+            pygame.draw.rect(self.screen, border_color, (x, y, width, height), borderWidth)
+    
+    def draw_circle(self, x, y, radius, fill=None, border=None, borderWidth=0):
+        """Draw a circle."""
+        if fill:
+            color = COLORS.get(fill, fill) if isinstance(fill, str) else fill
+            pygame.draw.circle(self.screen, color, (int(x), int(y)), int(radius))
+        if border and borderWidth > 0:
+            border_color = COLORS.get(border, border) if isinstance(border, str) else border
+            pygame.draw.circle(self.screen, border_color, (int(x), int(y)), int(radius), borderWidth)
+    
+    def draw_line(self, x1, y1, x2, y2, fill=None, lineWidth=1):
+        """Draw a line."""
+        if fill:
+            color = COLORS.get(fill, fill) if isinstance(fill, str) else fill
+            pygame.draw.line(self.screen, color, (int(x1), int(y1)), (int(x2), int(y2)), lineWidth)
+    
+    def draw_label(self, text, x, y, font='Arial', size=16, bold=False, italic=False, fill='black', align='center'):
+        """Draw text label."""
+        font_obj = self.get_font(font, size, bold, italic)
+        color = COLORS.get(fill, fill) if isinstance(fill, str) else fill
+        text_surface = font_obj.render(str(text), True, color)
+        text_rect = text_surface.get_rect()
+        
+        if align == 'center':
+            text_rect.center = (x, y)
+        elif align == 'left':
+            text_rect.left = x
+            text_rect.top = y
+        elif align == 'right':
+            text_rect.right = x
+            text_rect.top = y
+        
+        self.screen.blit(text_surface, text_rect)
+    
+    def draw_image(self, path, x, y, width=None, height=None, align='center'):
+        """Draw an image."""
+        img = self.load_image(path)
+        if img is None:
+            return
+        
+        # Scale if needed
+        if width or height:
+            original_width, original_height = img.get_size()
+            if width and height:
+                img = pygame.transform.scale(img, (int(width), int(height)))
+            elif width:
+                scale = width / original_width
+                img = pygame.transform.scale(img, (int(width), int(original_height * scale)))
+            elif height:
+                scale = height / original_height
+                img = pygame.transform.scale(img, (int(original_width * scale), int(height)))
+        
+        img_rect = img.get_rect()
+        if align == 'center':
+            img_rect.center = (x, y)
+        elif align == 'left-top':
+            img_rect.left = x
+            img_rect.top = y
+        
+        self.screen.blit(img, img_rect)
+
+# Global app variable for wrapper functions
+_app_instance = None
+
+def set_app_instance(app_instance):
+    """Set the global app instance for drawing functions."""
+    global _app_instance
+    _app_instance = app_instance
+
+# Wrapper functions to maintain compatibility with existing code
+def drawRect(x, y, width, height, fill=None, border=None, borderWidth=0):
+    if _app_instance:
+        _app_instance.draw_rect(x, y, width, height, fill, border, borderWidth)
+
+def drawCircle(x, y, radius, fill=None, border=None, borderWidth=0):
+    if _app_instance:
+        _app_instance.draw_circle(x, y, radius, fill, border, borderWidth)
+
+def drawLine(x1, y1, x2, y2, fill=None, lineWidth=1):
+    if _app_instance:
+        _app_instance.draw_line(x1, y1, x2, y2, fill, lineWidth)
+
+def drawLabel(text, x, y, font='Arial', size=16, bold=False, italic=False, fill='black', align='center'):
+    if _app_instance:
+        _app_instance.draw_label(text, x, y, font, size, bold, italic, fill, align)
+
+def drawImage(path, x, y, width=None, height=None, align='center'):
+    if _app_instance:
+        _app_instance.draw_image(path, x, y, width, height, align)
 
 # AI Functions
 
@@ -380,6 +556,21 @@ def onAppStart(app):
     app.p = "chess/assets/P.png"
 
     #CITATION Chess pieces taken from chess.com free to use
+    # Images have been pre-converted to RGBA format for proper transparency
+    # Uncomment the lines below if you need to reconvert images:
+    # fixAlpha("chess/assets/whitepawn.png")
+    # fixAlpha("chess/assets/blackpawn.png")
+    # fixAlpha("chess/assets/whiteking.png")
+    # fixAlpha("chess/assets/blackking.png")
+    # fixAlpha("chess/assets/whitequeen.png")
+    # fixAlpha("chess/assets/blackqueen.png")
+    # fixAlpha("chess/assets/whiterook.png")
+    # fixAlpha("chess/assets/blackrook.png")
+    # fixAlpha("chess/assets/whitebishop.png")
+    # fixAlpha("chess/assets/blackbishop.png")
+    # fixAlpha("chess/assets/whiteknight.png")
+    # fixAlpha("chess/assets/blackknight.png")
+    
     app.bking = f"chess/assets/{app.blackking.image}"
     app.bbishop = f"chess/assets/{app.blackbishop2.image}"
     app.bknight = f"chess/assets/{app.blackknight2.image}"
@@ -1267,9 +1458,8 @@ def onStep(app):
     if app.animatingPiece is not None and app.animationProgress < 1.0:
         app.animationProgress += app.animationSpeed
         if app.animationProgress >= 1.0:
-            # Animation complete - clear original position and animation state
-            if app.animationStartPos is not None:
-                app.plist[app.animationStartPos[0]][app.animationStartPos[1]] = None
+            # Animation complete - clear animation state
+            # Note: source position was already cleared in executeMove
             app.animationProgress = 1.0
             app.animatingPiece = None
             app.animationStartPos = None
@@ -1340,12 +1530,15 @@ def executeMove(app, piece, move):
     app.animationEndPos = [move[0], move[1]]
     app.animationProgress = 0.0
     
-    # Move the piece
+    # Move the piece - clear source position immediately to fix board drawing
     app.storeOriginal = piece.row
     app.storePrevious = move
     app.storePreviousType = type(piece)
+    originalRow, originalCol = piece.row, piece.col
     piece.row = move[0]
     piece.col = move[1]
+    # Clear the source position immediately so board draws correctly
+    app.plist[originalRow][originalCol] = None
     app.plist[move[0]][move[1]] = piece
     
     # Handle pawn promotion (simplified for AI)
@@ -1917,7 +2110,9 @@ def drawResetButton(app):
 def drawBoard(app):
     for i in range(8):
         for j in range(8):
-            drawCell(app, i, j, app.board[i][j][0])
+            # Calculate checkerboard pattern directly
+            color = "white" if ((i + j) % 2 == 0) else "gray"
+            drawCell(app, i, j, color)
 
 def drawTakenPieces(app):
     #draws all of the pieces on the edge of the board to show taken
@@ -2085,6 +2280,19 @@ def drawPieces(app):
                 if (app.animatingPiece is not None and 
                     app.animatingPiece == d and 
                     app.animationProgress < 1.0):
+                    # Redraw board squares that the piece passes over during animation
+                    # This ensures the correct checkerboard pattern shows through
+                    if app.animationStartPos is not None:
+                        startRow, startCol = app.animationStartPos
+                        endRow, endCol = app.animationEndPos
+                        # Redraw source square (now empty) with correct checkerboard color
+                        startColor = "white" if ((startRow + startCol) % 2 == 0) else "gray"
+                        drawCell(app, startRow, startCol, startColor)
+                        # Redraw destination square if different (may have captured piece)
+                        if startRow != endRow or startCol != endCol:
+                            endColor = "white" if ((endRow + endCol) % 2 == 0) else "gray"
+                            drawCell(app, endRow, endCol, endColor)
+                    
                     # Draw piece at animated position
                     startX = app.margin + app.cellSize * (app.animationStartPos[1] + 0.5)
                     startY = app.margin + app.cellSize * (app.animationStartPos[0] + 0.5)
@@ -2125,6 +2333,7 @@ def drawPieces(app):
                         [i, j] == app.animationStartPos):
                         # Don't draw at old position during animation
                         continue
+                    # Draw piece - board square already drawn by drawBoard()
                     drawP(app, i, j, d)
 
 #draws the piece
@@ -2155,7 +2364,71 @@ def drawP(app, row, col, piece):
 
 #runs the game
 def main():
-    runApp(width=900, height=950)
+    global app, _app_instance
+    width, height = 900, 950
+    
+    # Create game instance
+    app = Game(width, height)
+    _app_instance = app  # Set for wrapper functions
+    
+    # Initialize game state (equivalent to onAppStart)
+    onAppStart(app)
+    
+    # Main game loop
+    running = True
+    FPS = 60
+    
+    while running:
+        # Handle events
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1:  # Left mouse button
+                    mouseX, mouseY = event.pos
+                    onMousePress(app, mouseX, mouseY)
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_p and not app.gameStarted:
+                    if app.gameMode == 'human':
+                        app.gameStarted = True
+        
+        # Update animation (equivalent to onStep)
+        if app.animatingPiece is not None:
+            app.animationProgress += app.animationSpeed
+            if app.animationProgress >= 1.0:
+                app.animationProgress = 1.0
+                # Animation complete - clear the piece from source position
+                if app.animationStartPos is not None:
+                    app.plist[app.animationStartPos[0]][app.animationStartPos[1]] = None
+                app.animatingPiece = None
+                app.animationStartPos = None
+                app.animationEndPos = None
+                app.animationProgress = 0.0
+        
+        # Computer move logic (if it's computer's turn and no animation)
+        if (app.gameStarted and not app.gameOver and 
+            app.gameMode == 'computer' and 
+            app.animatingPiece is None and
+            not app.computerThinking):
+            currentPlayer = 'white' if app.turn else 'black'
+            if currentPlayer == app.computerPlayer:
+                app.computerThinking = True
+                computerMove = getComputerMove(app)
+                if computerMove:
+                    piece, move = computerMove
+                    executeMove(app, piece, move)
+                app.computerThinking = False
+        
+        # Redraw everything
+        app.screen.fill(COLORS.get('white', (255, 255, 255)))
+        redrawAll(app)
+        pygame.display.flip()
+        
+        # Control frame rate
+        app.clock.tick(FPS)
+    
+    pygame.quit()
+    sys.exit()
 
 if __name__ == '__main__':
     main()
